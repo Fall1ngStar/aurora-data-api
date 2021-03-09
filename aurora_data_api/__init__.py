@@ -44,39 +44,22 @@ class AuroraDataAPIClient:
         self._aurora_cluster_arn = aurora_cluster_arn or os.environ.get("AURORA_CLUSTER_ARN")
         self._secret_arn = secret_arn or os.environ.get("AURORA_SECRET_ARN")
         self._charset = charset
-        self._transaction_id = None
 
     def close(self):
         pass
 
     def commit(self):
-        if self._transaction_id:
-            res = self._client.commit_transaction(resourceArn=self._aurora_cluster_arn,
-                                                  secretArn=self._secret_arn,
-                                                  transactionId=self._transaction_id)
-            self._transaction_id = None
-            if res["transactionStatus"] != "Transaction Committed":
-                raise DatabaseError("Error while committing transaction: {}".format(res))
+        pass
 
     def rollback(self):
-        if self._transaction_id:
-            self._client.rollback_transaction(resourceArn=self._aurora_cluster_arn,
-                                              secretArn=self._secret_arn,
-                                              transactionId=self._transaction_id)
-            self._transaction_id = None
+        pass
 
     def cursor(self):
-        if self._transaction_id is None:
-            res = self._client.begin_transaction(database=self._dbname,
-                                                 resourceArn=self._aurora_cluster_arn,
-                                                 # schema="string", TODO
-                                                 secretArn=self._secret_arn)
-            self._transaction_id = res["transactionId"]
         cursor = AuroraDataAPICursor(client=self._client,
                                      dbname=self._dbname,
                                      aurora_cluster_arn=self._aurora_cluster_arn,
                                      secret_arn=self._secret_arn,
-                                     transaction_id=self._transaction_id)
+                                    )
         if self._charset:
             cursor.execute("SET character_set_client = '{}'".format(self._charset))
         return cursor
