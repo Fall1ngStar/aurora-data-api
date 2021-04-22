@@ -277,10 +277,10 @@ class AuroraDataAPICursor:
                             scalar_value = datetime.datetime.strptime(scalar_value, "%Y-%m-%d %H:%M:%S.%f")
                         else:
                             scalar_value = datetime.datetime.strptime(scalar_value, "%Y-%m-%d %H:%M:%S")
-                        # TODO: may want to check the original column type before adding timezone info
-                        # Aurora Data API for PostgreSQL instance always returns tz aware timestamps as UTC
-                        # https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/data-api.html#data-api.calling
-                        scalar_value = scalar_value.replace(tzinfo=datetime.timezone.utc)
+                    # TODO: may want to check the original column type before adding timezone info
+                    # Aurora Data API for PostgreSQL instance always returns tz aware timestamps as UTC
+                    # https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/data-api.html#data-api.calling
+                    scalar_value = scalar_value.replace(tzinfo=datetime.timezone.utc)
             return scalar_value
 
     def scroll(self, value, mode="relative"):
