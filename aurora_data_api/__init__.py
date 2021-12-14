@@ -4,8 +4,18 @@ aurora-data-api - A Python DB-API 2.0 client for the AWS Aurora Serverless Data 
 import os, datetime, ipaddress, uuid, time, random, string, logging, itertools, reprlib
 from decimal import Decimal
 from collections import namedtuple
-from .exceptions import (Warning, Error, InterfaceError, DatabaseError, DataError, OperationalError, IntegrityError,
-                         InternalError, ProgrammingError, NotSupportedError)
+from .exceptions import (
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
 from .mysql_error_codes import MySQLErrorCodes
 import boto3
 
@@ -29,37 +39,76 @@ DATETIME = datetime.datetime
 ROWID = str
 DECIMAL = Decimal
 
-ColumnDescription = namedtuple("ColumnDescription", "name type_code display_size internal_size precision scale null_ok")
+ColumnDescription = namedtuple(
+    "ColumnDescription",
+    "name type_code display_size internal_size precision scale null_ok",
+)
 ColumnDescription.__new__.__defaults__ = (None,) * len(ColumnDescription._fields)
 
 logger = logging.getLogger(__name__)
 
 
 class AuroraDataAPIClient:
-    def __init__(self, dbname=None, aurora_cluster_arn=None, secret_arn=None, rds_data_client=None, charset=None):
+    def __init__(
+        self,
+        dbname=None,
+        aurora_cluster_arn=None,
+        secret_arn=None,
+        rds_data_client=None,
+        charset=None,
+    ):
         self._client = rds_data_client
         if rds_data_client is None:
             self._client = boto3.client("rds-data")
         self._dbname = dbname
-        self._aurora_cluster_arn = aurora_cluster_arn or os.environ.get("AURORA_CLUSTER_ARN")
+        self._aurora_cluster_arn = aurora_cluster_arn or os.environ.get(
+            "AURORA_CLUSTER_ARN"
+        )
         self._secret_arn = secret_arn or os.environ.get("AURORA_SECRET_ARN")
         self._charset = charset
+        self._transaction_id = None
 
     def close(self):
         pass
 
+    def begin(self):
+        res = self._client.begin_transaction(
+            database=self._dbname,
+            resourceArn=self._aurora_cluster_arn,
+            # schema="string", TODO
+            secretArn=self._secret_arn,
+        )
+        self._transaction_id = res["transactionId"]
+
     def commit(self):
-        pass
+        if self._transaction_id:
+            res = self._client.commit_transaction(
+                resourceArn=self._aurora_cluster_arn,
+                secretArn=self._secret_arn,
+                transactionId=self._transaction_id,
+            )
+            self._transaction_id = None
+            if res["transactionStatus"] != "Transaction Committed":
+                raise DatabaseError(
+                    "Error while committing transaction: {}".format(res)
+                )
 
     def rollback(self):
-        pass
+        if self._transaction_id:
+            self._client.rollback_transaction(
+                resourceArn=self._aurora_cluster_arn,
+                secretArn=self._secret_arn,
+                transactionId=self._transaction_id,
+            )
+            self._transaction_id = None
 
     def cursor(self):
-        cursor = AuroraDataAPICursor(client=self._client,
-                                     dbname=self._dbname,
-                                     aurora_cluster_arn=self._aurora_cluster_arn,
-                                     secret_arn=self._secret_arn,
-                                    )
+        cursor = AuroraDataAPICursor(
+            client=self._client,
+            dbname=self._dbname,
+            aurora_cluster_arn=self._aurora_cluster_arn,
+            secret_arn=self._secret_arn,
+        )
         if self._charset:
             cursor.execute("SET character_set_client = '{}'".format(self._charset))
         return cursor
@@ -102,7 +151,7 @@ class AuroraDataAPICursor:
         "timestamptz": datetime.datetime,
         "uuid": uuid.uuid4,
         "numeric": Decimal,
-        "decimal": Decimal
+        "decimal": Decimal,
     }
     _data_api_type_map = {
         bytes: "blobValue",
@@ -117,10 +166,17 @@ class AuroraDataAPICursor:
         datetime.date: "DATE",
         datetime.time: "TIME",
         datetime.datetime: "TIMESTAMP",
-        Decimal: "DECIMAL"
+        Decimal: "DECIMAL",
     }
 
-    def __init__(self, client=None, dbname=None, aurora_cluster_arn=None, secret_arn=None, transaction_id=None):
+    def __init__(
+        self,
+        client=None,
+        dbname=None,
+        aurora_cluster_arn=None,
+        secret_arn=None,
+        transaction_id=None,
+    ):
         self.arraysize = 1000
         self.description = None
         self._client = client
@@ -135,7 +191,9 @@ class AuroraDataAPICursor:
     def prepare_param(self, param_name, param_value):
         if param_value is None:
             return dict(name=param_name, value=dict(isNull=True))
-        param_data_api_type = self._data_api_type_map.get(type(param_value), "stringValue")
+        param_data_api_type = self._data_api_type_map.get(
+            type(param_value), "stringValue"
+        )
         param = dict(name=param_name, value={param_data_api_type: param_value})
         if param_data_api_type == "stringValue" and not isinstance(param_value, str):
             param["value"][param_data_api_type] = str(param_value)
@@ -154,31 +212,37 @@ class AuroraDataAPICursor:
         # see https://www.postgresql.org/docs/9.5/datatype.html
         self.description = []
         for column in column_metadata:
-            col_desc = ColumnDescription(name=column["name"],
-                                         type_code=self._pg_type_map.get(column["typeName"].lower(), str))
+            col_desc = ColumnDescription(
+                name=column["name"],
+                type_code=self._pg_type_map.get(column["typeName"].lower(), str),
+            )
             self.description.append(col_desc)
 
     def _start_paginated_query(self, execute_statement_args, records_per_page=None):
         # MySQL cursors are non-scrollable (https://dev.mysql.com/doc/refman/8.0/en/cursors.html)
         # - may not support page autosizing
         # - FETCH requires INTO - may need to write all results into a server side var and iterate on it
-        pg_cursor_name = "{}_{}_{}".format(__name__,
-                                           int(time.time()),
-                                           ''.join(random.choices(string.ascii_letters + string.digits, k=8)))
+        pg_cursor_name = "{}_{}_{}".format(
+            __name__,
+            int(time.time()),
+            "".join(random.choices(string.ascii_letters + string.digits, k=8)),
+        )
         cursor_stmt = "DECLARE " + pg_cursor_name + " SCROLL CURSOR FOR "
         execute_statement_args["sql"] = cursor_stmt + execute_statement_args["sql"]
         self._client.execute_statement(**execute_statement_args)
         self._paging_state = {
             "execute_statement_args": dict(execute_statement_args),
             "records_per_page": records_per_page or self.arraysize,
-            "pg_cursor_name": pg_cursor_name
+            "pg_cursor_name": pg_cursor_name,
         }
 
     def _prepare_execute_args(self, operation):
-        execute_args = dict(database=self._dbname,
-                            resourceArn=self._aurora_cluster_arn,
-                            secretArn=self._secret_arn,
-                            sql=operation)
+        execute_args = dict(
+            database=self._dbname,
+            resourceArn=self._aurora_cluster_arn,
+            secretArn=self._secret_arn,
+            sql=operation,
+        )
         if self._transaction_id:
             execute_args["transactionId"] = self._transaction_id
         return execute_args
@@ -187,18 +251,29 @@ class AuroraDataAPICursor:
         return [self.prepare_param(k, v) for k, v in parameters.items()]
 
     def _get_database_error(self, origin_error):
-        if getattr(origin_error, "response", {}).get("Error", {}).get("Message", "").startswith("Database error code"):
-            code, msg = (s.split(": ", 1)[1] for s in origin_error.response["Error"]["Message"].split(". ", 1))
+        if (
+            getattr(origin_error, "response", {})
+            .get("Error", {})
+            .get("Message", "")
+            .startswith("Database error code")
+        ):
+            code, msg = (
+                s.split(": ", 1)[1]
+                for s in origin_error.response["Error"]["Message"].split(". ", 1)
+            )
             return DatabaseError(MySQLErrorCodes(int(code)), msg)
         else:
             return DatabaseError(origin_error)
 
     def execute(self, operation, parameters=None):
         self._current_response, self._iterator, self._paging_state = None, None, None
-        execute_statement_args = dict(self._prepare_execute_args(operation),
-                                      includeResultMetadata=True)
+        execute_statement_args = dict(
+            self._prepare_execute_args(operation), includeResultMetadata=True
+        )
         if parameters:
-            execute_statement_args["parameters"] = self._format_parameter_set(parameters)
+            execute_statement_args["parameters"] = self._format_parameter_set(
+                parameters
+            )
         logger.debug("execute %s", reprlib.repr(operation.strip()))
         try:
             res = self._client.execute_statement(**execute_statement_args)
@@ -208,8 +283,12 @@ class AuroraDataAPICursor:
         except self._client.exceptions.BadRequestException as e:
             if "Please paginate your query" in str(e):
                 self._start_paginated_query(execute_statement_args)
-            elif "Database returned more than the allowed response size limit" in str(e):
-                self._start_paginated_query(execute_statement_args, records_per_page=max(1, self.arraysize // 2))
+            elif "Database returned more than the allowed response size limit" in str(
+                e
+            ):
+                self._start_paginated_query(
+                    execute_statement_args, records_per_page=max(1, self.arraysize // 2)
+                )
             else:
                 raise self._get_database_error(e) from e
         self._iterator = iter(self)
@@ -219,8 +298,8 @@ class AuroraDataAPICursor:
         if self._current_response:
             if "records" in self._current_response:
                 return len(self._current_response["records"])
-            elif 'numberOfRecordsUpdated' in self._current_response:
-                return self._current_response['numberOfRecordsUpdated']
+            elif "numberOfRecordsUpdated" in self._current_response:
+                return self._current_response["numberOfRecordsUpdated"]
         return -1
 
     @property
@@ -236,8 +315,10 @@ class AuroraDataAPICursor:
     def executemany(self, operation, seq_of_parameters):
         logger.debug("executemany %s", reprlib.repr(operation.strip()))
         for batch in self._page_input(seq_of_parameters):
-            batch_execute_statement_args = dict(self._prepare_execute_args(operation),
-                                                parameterSets=[self._format_parameter_set(p) for p in batch])
+            batch_execute_statement_args = dict(
+                self._prepare_execute_args(operation),
+                parameterSets=[self._format_parameter_set(p) for p in batch],
+            )
             try:
                 self._client.batch_execute_statement(**batch_execute_statement_args)
             except self._client.exceptions.BadRequestException as e:
@@ -247,7 +328,10 @@ class AuroraDataAPICursor:
         if "records" in response:
             for i, record in enumerate(response["records"]):
                 response["records"][i] = tuple(
-                    self._render_value(value, col_desc=self.description[j] if self.description else None)
+                    self._render_value(
+                        value,
+                        col_desc=self.description[j] if self.description else None,
+                    )
                     for j, value in enumerate(record)
                 )
         return response
@@ -257,7 +341,10 @@ class AuroraDataAPICursor:
             return None
         elif "arrayValue" in value:
             if "arrayValues" in value["arrayValue"]:
-                return [self._render_value(nested) for nested in value["arrayValue"]["arrayValues"]]
+                return [
+                    self._render_value(nested)
+                    for nested in value["arrayValue"]["arrayValues"]
+                ]
             else:
                 return list(value["arrayValue"].values())[0]
         else:
@@ -268,15 +355,26 @@ class AuroraDataAPICursor:
                 else:
                     try:
                         scalar_value = col_desc.type_code.fromisoformat(scalar_value)
-                    except (AttributeError, ValueError):  # fromisoformat not supported on Python < 3.7
+                    except (
+                        AttributeError,
+                        ValueError,
+                    ):  # fromisoformat not supported on Python < 3.7
                         if col_desc.type_code == datetime.date:
-                            scalar_value = datetime.datetime.strptime(scalar_value, "%Y-%m-%d").date()
+                            scalar_value = datetime.datetime.strptime(
+                                scalar_value, "%Y-%m-%d"
+                            ).date()
                         elif col_desc.type_code == datetime.time:
-                            scalar_value = datetime.datetime.strptime(scalar_value, "%H:%M:%S").time()
+                            scalar_value = datetime.datetime.strptime(
+                                scalar_value, "%H:%M:%S"
+                            ).time()
                         elif "." in scalar_value:
-                            scalar_value = datetime.datetime.strptime(scalar_value, "%Y-%m-%d %H:%M:%S.%f")
+                            scalar_value = datetime.datetime.strptime(
+                                scalar_value, "%Y-%m-%d %H:%M:%S.%f"
+                            )
                         else:
-                            scalar_value = datetime.datetime.strptime(scalar_value, "%Y-%m-%d %H:%M:%S")
+                            scalar_value = datetime.datetime.strptime(
+                                scalar_value, "%Y-%m-%d %H:%M:%S"
+                            )
                     # TODO: may want to check the original column type before adding timezone info
                     # Aurora Data API for PostgreSQL instance always returns tz aware timestamps as UTC
                     # https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/data-api.html#data-api.calling
@@ -287,11 +385,11 @@ class AuroraDataAPICursor:
         if not self._paging_state:
             raise InterfaceError("Cursor scroll attempted but pagination is not active")
         scroll_stmt = "MOVE {mode} {value} FROM {pg_cursor_name}".format(
-            mode=mode.upper(),
-            value=value,
-            **self._paging_state
+            mode=mode.upper(), value=value, **self._paging_state
         )
-        scroll_args = dict(self._paging_state["execute_statement_args"], sql=scroll_stmt)
+        scroll_args = dict(
+            self._paging_state["execute_statement_args"], sql=scroll_stmt
+        )
         logger.debug("Scrolling cursor %s by %d rows", mode, value)
         self._client.execute_statement(**scroll_args)
 
@@ -299,15 +397,27 @@ class AuroraDataAPICursor:
         if self._paging_state:
             next_page_args = self._paging_state["execute_statement_args"]
             while True:
-                logger.debug("Fetching page of %d records for auto-paginated query",
-                             self._paging_state["records_per_page"])
-                next_page_args["sql"] = "FETCH {records_per_page} FROM {pg_cursor_name}".format(**self._paging_state)
+                logger.debug(
+                    "Fetching page of %d records for auto-paginated query",
+                    self._paging_state["records_per_page"],
+                )
+                next_page_args[
+                    "sql"
+                ] = "FETCH {records_per_page} FROM {pg_cursor_name}".format(
+                    **self._paging_state
+                )
                 try:
                     page = self._client.execute_statement(**next_page_args)
                 except self._client.exceptions.BadRequestException as e:
                     cur_rpp = self._paging_state["records_per_page"]
-                    if "Database returned more than the allowed response size limit" in str(e) and cur_rpp > 1:
-                        self.scroll(-self._paging_state["records_per_page"])  # Rewind the cursor to read the page again
+                    if (
+                        "Database returned more than the allowed response size limit"
+                        in str(e)
+                        and cur_rpp > 1
+                    ):
+                        self.scroll(
+                            -self._paging_state["records_per_page"]
+                        )  # Rewind the cursor to read the page again
                         logger.debug("Halving records per page")
                         self._paging_state["records_per_page"] //= 2
                         continue
@@ -363,7 +473,21 @@ class AuroraDataAPICursor:
         self._current_response = None
 
 
-def connect(aurora_cluster_arn=None, secret_arn=None, rds_data_client=None, database=None, host=None, port=None,
-            username=None, password=None, charset=None):
-    return AuroraDataAPIClient(dbname=database, aurora_cluster_arn=aurora_cluster_arn,
-                               secret_arn=secret_arn, rds_data_client=rds_data_client, charset=charset)
+def connect(
+    aurora_cluster_arn=None,
+    secret_arn=None,
+    rds_data_client=None,
+    database=None,
+    host=None,
+    port=None,
+    username=None,
+    password=None,
+    charset=None,
+):
+    return AuroraDataAPIClient(
+        dbname=database,
+        aurora_cluster_arn=aurora_cluster_arn,
+        secret_arn=secret_arn,
+        rds_data_client=rds_data_client,
+        charset=charset,
+    )
